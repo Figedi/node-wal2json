@@ -40,8 +40,14 @@ export interface IRawPGLogicalChange {
   };
 }
 
-export interface IRawPGLogicalResult {
+export interface IRawPGLogicalData {
   xid: string;
   timestamp: string;
   change: IRawPGLogicalChange[];
+}
+
+export interface IRawPGLogicalRow {
+  lsn: string;
+  xid: string;
+  data: string;
 }

@@ -1,20 +1,18 @@
 import { Client, ClientConfig } from "pg";
-import { Subject, from, defer, interval, Observable } from "rxjs";
-import { takeUntil, mergeMap, switchMap, tap } from "rxjs/operators";
+import { EMPTY, from, Observable } from "rxjs";
+
 import {
+  IRawPGLogicalData,
+  IRawPGLogicalRow,
   IChange,
   IDeleteOperation,
-  IRawPGLogicalResult,
   IUpsertOperation,
   IWal2JSONOpts,
 } from "./types";
 
-export class Wal2JSON {
+export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
   private running = false;
   private client!: Client;
-  public changes$?: Observable<IChange>;
-
-  private stop$ = new Subject();
 
   constructor(
     clientOpts: string | ClientConfig | Client,
@@ -25,6 +23,54 @@ export class Wal2JSON {
     } else {
       this.client = new Client(clientOpts);
     }
+    if (this.opts.timeout < 100) {
+      console.warn(
+        `Very short timeout (${this.opts.timeout}ms) chosen, this can lead to overwhelming your postgres instance`
+      );
+    }
+  }
+
+  public asAsyncIterator(): AsyncIterable<IChange<T>> {
+    if (this.running) {
+      void this.onError(
+        new Error(
+          "Service is already running, please call stop() first if you wish to consume via Async-iterators"
+        )
+      );
+      return {
+        async *[Symbol.asyncIterator]() {}, // empty async-iteratable, returns right away
+      };
+    }
+    this.running = true;
+    const self = this;
+    return {
+      async *[Symbol.asyncIterator]() {
+        await self.start();
+        let changes: IChange<T>[];
+        while (self.running) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, self.opts.timeout)
+          );
+          changes = await self.readChanges();
+          for (const change of changes) {
+            yield change;
+          }
+        }
+      },
+    };
+  }
+
+  public asObservable(): Observable<IChange<T>> {
+    if (this.running) {
+      void this.onError(
+        new Error(
+          "Service is already running, please call stop() first if you wish to consume via Observables"
+        )
+      );
+      return EMPTY;
+    }
+
+    return from(this.asAsyncIterator());
   }
 
   private async initReplicationSlot() {
@@ -45,62 +91,63 @@ export class Wal2JSON {
     ]);
   }
 
-  private readChanges = (): Promise<IChange[]> => {
-    if (!(this.client as any).readyForQuery) {
+  private normalizeResults<T>(rows: IRawPGLogicalRow[]): IChange<T>[] {
+    return rows.flatMap((row) => {
+      const data = JSON.parse(row.data) as IRawPGLogicalData;
+
+      return data.change.map((change) => {
+        let operation: IDeleteOperation<T> | IUpsertOperation<T>;
+        if (change.kind === "delete") {
+          operation = {
+            kind: change.kind,
+            schema: change.schema,
+            table: change.table,
+            raw: change,
+            parsed: change.oldkeys!.keynames.reduce(
+              (acc: any, name: string, i: number) => ({
+                ...acc,
+                [name]: change.oldkeys!.keyvalues[i],
+              }),
+              {} as T
+            ),
+          };
+        } else {
+          operation = {
+            kind: change.kind,
+            schema: change.schema,
+            table: change.table,
+            raw: change,
+            parsed: change.columnnames.reduce(
+              (acc: any, name: string, i: number) => ({
+                ...acc,
+                [name]: change.columnvalues[i],
+              }),
+              {} as T
+            ),
+          };
+        }
+        return {
+          lsn: row.lsn,
+          xid: row.xid,
+          timestamp: new Date(data.timestamp),
+          operation,
+        };
+      });
+    });
+  }
+
+  private readChanges = (): Promise<IChange<T>[]> => {
+    if (!(this.client as any).readyForQuery || (this.client as any)._ending) {
       return Promise.resolve([]);
     }
-    return new Promise<IChange[]>((resolve, reject) =>
+    return new Promise<IChange<T>[]>((resolve, reject) =>
       this.client.query(
         `SELECT * FROM pg_logical_slot_get_changes('${this.opts.slotName}', NULL, NULL, 'include-timestamp', '1')`,
         (err, results) => {
           if (err) {
-            this.stop(err);
-            return reject(err);
+            return this.onError(err).then(() => reject(err));
           }
-          return resolve(
-            results.rows.flatMap((row) => {
-              const data = JSON.parse(row.data) as IRawPGLogicalResult;
-
-              return data.change.map((change) => {
-                let operation: IDeleteOperation | IUpsertOperation;
-                if (change.kind === "delete") {
-                  operation = {
-                    kind: change.kind,
-                    schema: change.schema,
-                    table: change.table,
-                    raw: change,
-                    parsed: change.oldkeys!.keynames.reduce(
-                      (acc: any, name: string, i: number) => ({
-                        ...acc,
-                        [name]: change.oldkeys!.keyvalues[i],
-                      }),
-                      {} as Record<string, any>
-                    ),
-                  };
-                } else {
-                  operation = {
-                    kind: change.kind,
-                    schema: change.schema,
-                    table: change.table,
-                    raw: change,
-                    parsed: change.columnnames.reduce(
-                      (acc: any, name: string, i: number) => ({
-                        ...acc,
-                        [name]: change.columnvalues[i],
-                      }),
-                      {} as Record<string, any>
-                    ),
-                  };
-                }
-                return {
-                  lsn: row.lsn,
-                  xid: row.xid,
-                  timestamp: new Date(data.timestamp),
-                  operation,
-                };
-              });
-            })
-          );
+          return resolve(this.normalizeResults<T>(results.rows));
         }
       )
     );
@@ -113,49 +160,28 @@ export class Wal2JSON {
   }
 
   private async close() {
+    this.running = false;
     if (this.opts.destroySlotOnClose) {
       await this.destroyReplicationSlot();
-      this.stop$.next(1);
     }
     await this.client.end();
-    this.running = false;
   }
 
-  public async start(): Promise<Observable<IChange>> {
-    if (this.running) {
-      await this.onError(
-        new Error(
-          "This listener is already running. If you would like to restart it use the restart method."
-        )
-      );
-      // should throw
-    }
-    await this.client.connect();
-    this.running = true;
+  private async start(): Promise<void> {
     try {
+      await this.client.connect();
       await this.initReplicationSlot();
-      this.changes$ = interval(this.opts.timeout).pipe(
-        takeUntil(this.stop$),
-        switchMap(() =>
-          defer(() => this.readChanges()).pipe(
-            mergeMap((changes) => from(changes))
-          )
-        )
-      );
-      return this.changes$;
     } catch (e: any) {
-      await this.onError(e);
-      return null!; // never called, onError throws
+      return this.onError(e);
     }
   }
 
-  public async stop(error?: Error) {
-    if (this.running) {
-      if (error) {
-        await this.onError(error); // calls close() as well
-      } else {
-        await this.close();
-      }
+  public async stop() {
+    if (!this.running) {
+      return this.onError(
+        new Error("Service is not running yet, pleaase call start() firsts")
+      );
     }
+    return this.close();
   }
 }
