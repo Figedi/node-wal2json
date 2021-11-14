@@ -133,6 +133,7 @@ export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
   }
 
   private readChanges = (): Promise<IChange<T>[]> => {
+    // @todo do not use internal apis from pg anymore
     // eslint-disable-next-line no-underscore-dangle
     if (!(this.client as any).readyForQuery || (this.client as any)._ending) {
       return Promise.resolve([]);

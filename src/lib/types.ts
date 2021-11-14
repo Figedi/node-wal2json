@@ -1,7 +1,7 @@
 export interface IWal2JSONOpts {
   slotName: string;
-  temporary?: boolean;
   pollTimeoutMs: number;
+  temporary?: boolean;
   destroySlotOnClose?: boolean;
 }
 
