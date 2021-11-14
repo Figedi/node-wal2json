@@ -1,0 +1,38 @@
+version: 2.1
+orbs:
+  ci: figedi/ci@0.1.2
+    
+workflows:
+  ci:
+    jobs:
+      - ci/checkout_bump_and_build:
+          name: checkout_bump_and_build
+          context: ci-default-v1
+          # do not strip dot-files for now (e.g. keep .npmignore)
+          project: figedi
+
+      - ci/push_to_github:
+          name: push_to_github
+          context: ci-default-v1
+          stash_before_pull: true
+          filters:
+            branches:
+              only:
+                - master
+                - /release\/.*/
+          requires:
+            - checkout_bump_and_build
+
+      - ci/push_to_npm:
+          name: push_to_npm
+          context: ci-default-v1
+          image: builder
+          public: true
+          filters:
+            branches:
+              only:
+                - master
+                - /release\/.*/
+          requires:
+            - checkout_bump_and_build
+  

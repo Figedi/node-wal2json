@@ -1,0 +1,8 @@
+src
+.circleci
+.dockerignore
+.eslintrc
+.gitignore
+.prettierrc
+Dockerfile 
+tsconfig.json
