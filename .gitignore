@@ -1,9 +1,10 @@
 .idea/
 .vscode/
 node_modules/
-build/
 tmp/
 temp/
 *.csv
 *.env
 **/test-reports/**
+src/test.ts
+dist
