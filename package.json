@@ -4,8 +4,10 @@
   "description": "Simple wal2json-interface via polling",
   "main": "build/index.js",
   "repository": {
-    "type": "git"
+    "type": "git",
+    "url": "https://github.com/Figedi/node-wal2json.git"
   },
+  "readme": "README.md",
   "engines": {
     "node": ">=14"
   },

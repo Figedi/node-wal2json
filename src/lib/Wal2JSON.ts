@@ -48,12 +48,11 @@ export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
     return {
       async *[Symbol.asyncIterator]() {
         await self.start();
-        let changes: IChange<T>[];
+
         while (self.running) {
-          changes = await self.readChanges();
-          for (const change of changes) {
-            yield change;
-          }
+          const changes = await self.readChanges();
+          yield* changes;
+
           await new Promise(resolve => setTimeout(resolve, self.opts.pollTimeoutMs));
         }
       },
@@ -132,27 +131,26 @@ export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
     });
   }
 
-  private readChanges = (): Promise<IChange<T>[]> => {
+  private readChanges = async (): Promise<IChange<T>[]> => {
     // @todo do not use internal apis from pg anymore
     // eslint-disable-next-line no-underscore-dangle
     if (!(this.client as any).readyForQuery || (this.client as any)._ending) {
       return Promise.resolve([]);
     }
-    return new Promise<IChange<T>[]>((resolve, reject) =>
-      this.client.query(
-        `SELECT * FROM pg_logical_slot_get_changes('${this.opts.slotName}', NULL, NULL, 'include-timestamp', '1')`,
-        (err, results) => {
-          if (err) {
-            return this.onError(err).then(() => reject(err));
-          }
-          const normalizedRows = this.normalizeResults(results.rows);
-          if (normalizedRows.length) {
-            debug({ normalizedRows }, `Received ${normalizedRows.length} changed rows from postgres`);
-          }
-          return resolve(normalizedRows);
-        },
-      ),
-    );
+    try {
+      const results = await this.client.query(
+        "SELECT * FROM pg_logical_slot_get_changes($1, NULL, NULL, 'include-timestamp', '1')",
+        [this.opts.slotName],
+      );
+      const normalizedRows = this.normalizeResults(results.rows);
+      if (normalizedRows.length) {
+        debug({ normalizedRows }, `Received ${normalizedRows.length} changed rows from postgres`);
+      }
+      return normalizedRows;
+    } catch (e) {
+      await this.onError(e);
+      throw e;
+    }
   };
 
   private async onError(e: Error) {
