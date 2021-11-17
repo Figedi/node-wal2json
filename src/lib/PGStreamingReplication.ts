@@ -2,9 +2,10 @@ import { Client } from "pg";
 import { Transform, pipeline, finished } from "stream";
 import { both, CopyBothQueryStream } from "pg-copy-streams";
 import _debug from "debug";
+import { normalizeStreamResults } from "./helpers";
+import { IPGStreamingReplicationOpts } from ".";
 
 const debug = _debug("pglogical");
-// eslint-disable-next-line no-underscore-dangle
 const BufferList = require("obuf");
 
 const POSTGRES_EPOCH_2000_01_01_BIGINT = 946684800000n; // milli-seconds <> 1970 -> 2000
@@ -81,17 +82,17 @@ class PgLogicalParser extends Transform {
 
   private code: number | null = null;
 
-  private lastServerLSN: LogSequenceNumber = LogSequenceNumber.INVALID_LSN;
+  private lastServerLSN = LogSequenceNumber.INVALID_LSN;
 
-  private lastReceiveLSN: LogSequenceNumber = LogSequenceNumber.INVALID_LSN;
+  private lastReceiveLSN = LogSequenceNumber.INVALID_LSN;
+
+  constructor() {
+    super({ objectMode: true });
+  }
 
   public _flush() {}
 
-  constructor(private cb: (data: any) => void) {
-    super();
-  }
-
-  public _transform(chunk: Buffer, _encoding: string, callback: (error?: Error) => void) {
+  public _transform(chunk: Buffer, _encoding: string, next: (error?: Error) => void) {
     this.buf.push(chunk);
     while (this.buf.size > 0) {
       if (this.state === PG_CODE) {
@@ -101,46 +102,57 @@ class PgLogicalParser extends Transform {
       }
       if (this.state === PG_MESSAGE) {
         if (this.code === 0x6b /*k*/) {
-          this.lastServerLSN = LogSequenceNumber.fromBuf(this.buf.take(8));
-          if (this.lastServerLSN.asInt64() > this.lastReceiveLSN.asInt64()) {
-            this.lastReceiveLSN = this.lastServerLSN;
-          }
-          const systemClock: Buffer = this.buf.take(8);
-
-          const replyRequired = this.buf.take(1).readUInt8() !== 0;
-
-          this.cb({
-            lastReceiveLSN: this.lastReceiveLSN,
-            systemClock: formatCenturyMicroToDate(systemClock),
-            replyRequired, // @todo either when this is true or when a configured timeout (based on the lastStatusUpdate diff -> update)
-          });
-          this.state = PG_CODE;
+          this.onKeepAlivePacketReceived();
           // x
         } else if (this.code === 0x77 /*w*/) {
-          this.lastReceiveLSN = LogSequenceNumber.fromBuf(this.buf.take(8));
-          this.lastServerLSN = LogSequenceNumber.fromBuf(this.buf.take(8));
-          const systemClock: Buffer = this.buf.take(8);
-
-          const data = this.buf.take(this.buf.size); /* plugin data */
-
-          this.cb({
-            lastReceiveLSN: this.lastReceiveLSN,
-            systemClock: formatCenturyMicroToDate(systemClock),
-            data: JSON.parse(data.toString("utf-8")),
-          });
-          this.state = PG_CODE;
+          this.onXLogDataPacketReceived();
         } else {
-          return callback(new Error("wrong message code inside"));
+          return next(new Error("wrong message code inside"));
         }
       }
+
       break;
     }
-    callback();
+    next();
+  }
+
+  private onXLogDataPacketReceived() {
+    this.lastReceiveLSN = LogSequenceNumber.fromBuf(this.buf.take(8));
+    this.lastServerLSN = LogSequenceNumber.fromBuf(this.buf.take(8));
+    const systemClock: Buffer = this.buf.take(8);
+
+    const data = this.buf.take(this.buf.size); /* plugin data */
+
+    this.push({
+      lastReceiveLSN: this.lastReceiveLSN,
+      systemClock: formatCenturyMicroToDate(systemClock),
+      replyRequired: false,
+      data: JSON.parse(data.toString("utf-8")),
+    });
+
+    this.state = PG_CODE;
+  }
+
+  private onKeepAlivePacketReceived() {
+    this.lastServerLSN = LogSequenceNumber.fromBuf(this.buf.take(8));
+    if (this.lastServerLSN.asInt64() > this.lastReceiveLSN.asInt64()) {
+      this.lastReceiveLSN = this.lastServerLSN;
+    }
+    const systemClock: Buffer = this.buf.take(8);
+
+    const replyRequired = this.buf.take(1).readUInt8() !== 0;
+
+    this.push({
+      lastReceiveLSN: this.lastReceiveLSN,
+      systemClock: formatCenturyMicroToDate(systemClock),
+      replyRequired,
+    });
+    this.state = PG_CODE;
   }
 }
 
-export class PgLogical {
-  private parser = new PgLogicalParser(data => this.onDataReceived(data));
+export class PGStreamingReplication<T extends Record<string, any> = Record<string, any>> extends Transform {
+  private started = false;
 
   private copyBothStream!: CopyBothQueryStream;
 
@@ -150,23 +162,28 @@ export class PgLogical {
 
   private lastAppliedLSN = LogSequenceNumber.INVALID_LSN;
 
-  public lastStatusUpdate?: bigint;
+  private lastStatusUpdate!: bigint;
 
-  private interval?: NodeJS.Timer;
+  private updateIntervalMs!: number;
 
-  constructor(private client: Client, private slotName: string, private startLsn: string) {
-    this.lastReceiveLSN = LogSequenceNumber.fromString(startLsn);
-
-    this.interval = setInterval(() => this.updateStatus(), 1000);
+  constructor(private client: Client, private opts: IPGStreamingReplicationOpts) {
+    super({ objectMode: true });
+    this.updateIntervalMs = this.opts.updateIntervalMs ?? 0;
+    this.lastReceiveLSN = LogSequenceNumber.fromString(this.opts.startLsn);
+    this.lastStatusUpdate = getNanoseconds() - BigInt(this.updateIntervalMs) * 1000000n;
   }
 
   public start() {
-    this.copyBothStream = both(`START_REPLICATION SLOT ${this.slotName} LOGICAL ${this.startLsn}`, {
+    if (this.started) {
+      throw new Error("Cannot call PGStreamingReplication#start() twice, please call stop() first");
+    }
+    this.copyBothStream = both(`START_REPLICATION SLOT ${this.opts.slotName} LOGICAL ${this.opts.startLsn}`, {
       alignOnCopyDataFrame: true,
     } as any);
     this.client.query(this.copyBothStream);
+    const parser = new PgLogicalParser();
 
-    pipeline(this.copyBothStream, this.parser, error => {
+    pipeline(this.copyBothStream, parser, this, error => {
       if (error) {
         debug({ error }, "Unexpected error in parser-stream");
       } else {
@@ -181,16 +198,23 @@ export class PgLogical {
       }
       this.client.end();
     });
+
+    this.started = true;
   }
 
   public stop() {
-    if (this.interval) {
-      clearInterval(this.interval);
-    }
     this.copyBothStream.end();
   }
 
-  public updateStatus() {
+  private updateDue(): boolean {
+    if (this.updateIntervalMs == 0) {
+      return false;
+    }
+    const diffMs = (getNanoseconds() - this.lastStatusUpdate) / BigInt(1e6);
+    return diffMs >= this.updateIntervalMs;
+  }
+
+  private updateStatus() {
     if (!this.lastReceiveLSN.empty) {
       return;
     }
@@ -207,19 +231,23 @@ export class PgLogical {
     this.lastStatusUpdate = getNanoseconds();
   }
 
-  private onDataReceived({ lastReceiveLSN, systemClock, data }: any) {
+  _transform(
+    { lastReceiveLSN, replyRequired, systemClock, data }: any,
+    _encoding: string,
+    next: (error?: Error) => void,
+  ) {
     this.lastReceiveLSN = lastReceiveLSN;
     this.lastFlushedLSN = lastReceiveLSN;
     this.lastAppliedLSN = lastReceiveLSN;
 
-    if (data) {
-      console.log("onDataReceived", {
-        timestamp: systemClock,
-        lsn: lastReceiveLSN.toString(),
-        data,
-      });
-    } else {
-      // console.log("onHeartbeatReceived", { timestamp: systemClock, lsn: lastReceiveLSN.toString() });
+    if (replyRequired || this.updateDue()) {
+      this.updateStatus();
     }
+
+    if (data) {
+      const normalizedRow = normalizeStreamResults<T>({ timestamp: systemClock, lsn: lastReceiveLSN.toString(), data });
+      this.push(normalizedRow);
+    }
+    next();
   }
 }

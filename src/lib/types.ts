@@ -1,16 +1,21 @@
 import { Duplex, DuplexOptions } from "stream";
 import { Submittable, Connection } from "pg";
 
-export interface IWal2JSONOpts {
+export interface IPGPollingReplicationOpts {
   slotName: string;
   pollTimeoutMs: number;
   temporary?: boolean;
   destroySlotOnClose?: boolean;
 }
 
+export interface IPGStreamingReplicationOpts {
+  slotName: string;
+  startLsn: string;
+  updateIntervalMs?: number;
+}
+
 export interface IChange<T = Record<string, any>> {
   lsn: string;
-  xid: string;
   timestamp: Date;
   operation: IUpsertOperation<T> | IDeleteOperation<T>;
 }
@@ -45,15 +50,18 @@ export interface IRawPGLogicalChange {
 }
 
 export interface IRawPGLogicalData {
-  xid: string;
-  timestamp: string;
+  timestamp: Date;
   change: IRawPGLogicalChange[];
 }
 
 export interface IRawPGLogicalRow {
   lsn: string;
-  xid: string;
   data: string;
+}
+export interface IRawStreamingRow {
+  timestamp: Date;
+  lsn: string;
+  data: Omit<IRawPGLogicalData, "timestamp">;
 }
 
 declare module "pg-copy-streams" {
