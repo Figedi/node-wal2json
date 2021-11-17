@@ -1,3 +1,6 @@
+import { Duplex, DuplexOptions } from "stream";
+import { Submittable, Connection } from "pg";
+
 export interface IWal2JSONOpts {
   slotName: string;
   pollTimeoutMs: number;
@@ -51,4 +54,12 @@ export interface IRawPGLogicalRow {
   lsn: string;
   xid: string;
   data: string;
+}
+
+declare module "pg-copy-streams" {
+  export function both(txt: string, options?: DuplexOptions): CopyBothQueryStream;
+
+  export class CopyBothQueryStream extends Duplex implements Submittable {
+    submit(connection: Connection): void;
+  }
 }
