@@ -1,2 +1,3 @@
-export * from "./Wal2JSON"
-export * from "./types"
+export * from "./PGStreamingReplication";
+export * from "./PGPollingReplication";
+export * from "./types";

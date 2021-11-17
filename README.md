@@ -3,7 +3,7 @@
 
 ## node-wal2json
 
-Small nodejs implementation for wal2json. Uses polling and `pg_logical_slot_get_changes` to read changes from a given replication_slot
+Small nodejs implementation for wal2json. Supports polling-mode (`pg_logical_slot_get_changes`) or streaming-mode (copy-streams) to read changes from a given replication_slot
 
 ### Installation
 
@@ -17,9 +17,12 @@ In order to use this library, make sure that you have install all prerequisites:
 1. Install [wal2json](https://github.com/eulerto/wal2json), follow the [configuration](https://github.com/eulerto/wal2json#configuration) setup
 2. On your postgres-installation, create a user with `REPLICATION`-attribute
 3. You are all set, run the library as follows:
+
+#### Polling mode
+
 ```typescript
 // initialize
-const wal2json = new Wal2JSON("postgres://<repl_user>:<password>@<host>/<db>", {
+const wal2json = new PGPollingReplication("postgres://<repl_user>:<password>@<host>/<db>", {
   pollTimeoutMs: 100, // poll every 100ms
   slotName: "test_slot", // create slot-name 'test'-slot'
 });
@@ -33,16 +36,16 @@ for await (const change of wal2json.asAsyncIterator()) {
 }
 ```
 
-### Options
+##### Options
 The reader can be initialized as follows:
 ```typescript
 // plain postgres://-connection-string
-const wal2json = new Wal2JSON('<connection-string>', opts);
+const wal2json = new PGPollingReplication('<connection-string>', opts);
 // pg-client options
-const wal2json = new Wal2JSON({ url: '...' }, opts);
+const wal2json = new PGPollingReplication({ url: '...' }, opts);
 
 // a pg-client instance
-const wal2json = new Wal2JSON(client, opts);
+const wal2json = new PGPollingReplication(client, opts);
 ```
 
 Opts has the following properties:
@@ -51,6 +54,46 @@ Opts has the following properties:
 | ------------- | ------------- |
 | slotName  | The slotname for pg_logical, will be created if not exists  |
 | pollTimeoutMs  | Interval for polling for changes in ms  |
-| temporary  | Creates a temporary slot bound to the connection  |
+| temporary  | (Optional) Creates a temporary slot bound to the connection  |
 | destroySlotOnClose  | (Optional) If a permanent slot is chosen and client is stopped, destroy slot  |
+
+-------
+
+**Streaming mode**
+
+```typescript
+// initialize
+const wal2json = new PGStreamingReplication("postgres://<repl_user>:<password>@<host>/<db>", {
+  startLsn: "0/5711970", // start at given LSN
+  updateIntervalMs: 1000, // send updates to pg roughly every 1000ms
+  slotName: "test_slot", // use slot-name 'test'-slot'
+});
+
+// wal2json is a readable, so it can be iterated over
+for await (const change of wal2json.asAsyncIterator()) {
+  console.log(change);
+}
+// other consumption options include piping...
+```
+
+**Options**
+
+The reader can be initialized as follows:
+```typescript
+// plain postgres://-connection-string
+const wal2json = new PGStreamingReplication('<connection-string>', opts);
+// pg-client options
+const wal2json = new PGStreamingReplication({ url: '...' }, opts);
+
+// a pg-client instance
+const wal2json = new PGStreamingReplication(client, opts);
+```
+
+Opts has the following properties:
+
+| Opt  | Meaning |
+| ------------- | ------------- |
+| slotName  | The slotname for pg_logical, will be created if not exists  |
+| updateIntervalMs  | Interval for sending-back updates to pg, set 0 for reducing updates to the max  |
+| startLsn  | The start-LSN for the replication, note when the slot is already advanced this is ignored  |
 

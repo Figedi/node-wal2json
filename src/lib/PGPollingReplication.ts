@@ -4,21 +4,15 @@ import _debug from "debug";
 
 const debug = _debug("wal2json");
 
-import {
-  IRawPGLogicalData,
-  IRawPGLogicalRow,
-  IChange,
-  IDeleteOperation,
-  IUpsertOperation,
-  IWal2JSONOpts,
-} from "./types";
+import { IChange, IPGPollingReplicationOpts } from "./types";
+import { normalizePollingResults } from "./helpers";
 
-export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
+export class PGPollingReplication<T extends Record<string, any> = Record<string, any>> {
   private running = false;
 
   private client!: Client;
 
-  constructor(clientOpts: string | ClientConfig | Client, private opts: IWal2JSONOpts) {
+  constructor(clientOpts: string | ClientConfig | Client, private opts: IPGPollingReplicationOpts) {
     if (clientOpts instanceof Client) {
       this.client = clientOpts;
     } else {
@@ -86,51 +80,6 @@ export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
     await this.client.query("SELECT pg_drop_replication_slot($1)", [this.opts.slotName]);
   }
 
-  private normalizeResults(rows: IRawPGLogicalRow[]): IChange<T>[] {
-    return rows.flatMap(row => {
-      const data = JSON.parse(row.data) as IRawPGLogicalData;
-
-      return data.change.map(change => {
-        let operation: IDeleteOperation<T> | IUpsertOperation<T>;
-        if (change.kind === "delete") {
-          operation = {
-            kind: change.kind,
-            schema: change.schema,
-            table: change.table,
-            raw: change,
-            parsed: change.oldkeys!.keynames.reduce(
-              (acc: any, name: string, i: number) => ({
-                ...acc,
-                [name]: change.oldkeys!.keyvalues[i],
-              }),
-              {} as T,
-            ),
-          };
-        } else {
-          operation = {
-            kind: change.kind,
-            schema: change.schema,
-            table: change.table,
-            raw: change,
-            parsed: change.columnnames.reduce(
-              (acc: any, name: string, i: number) => ({
-                ...acc,
-                [name]: change.columnvalues[i],
-              }),
-              {} as T,
-            ),
-          };
-        }
-        return {
-          lsn: row.lsn,
-          xid: row.xid,
-          timestamp: new Date(data.timestamp),
-          operation,
-        };
-      });
-    });
-  }
-
   private readChanges = async (): Promise<IChange<T>[]> => {
     // @todo do not use internal apis from pg anymore
     // eslint-disable-next-line no-underscore-dangle
@@ -142,7 +91,7 @@ export class Wal2JSON<T extends Record<string, any> = Record<string, any>> {
         "SELECT * FROM pg_logical_slot_get_changes($1, NULL, NULL, 'include-timestamp', '1')",
         [this.opts.slotName],
       );
-      const normalizedRows = this.normalizeResults(results.rows);
+      const normalizedRows = normalizePollingResults<T>(results.rows);
       if (normalizedRows.length) {
         debug({ normalizedRows }, `Received ${normalizedRows.length} changed rows from postgres`);
       }
