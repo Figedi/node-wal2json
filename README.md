@@ -63,7 +63,7 @@ Opts has the following properties:
 
 ```typescript
 // initialize
-const wal2json = new PGStreamingReplication("postgres://<repl_user>:<password>@<host>/<db>", {
+const wal2json = new PGStreamingReplication(client, {
   startLsn: "0/5711970", // start at given LSN
   updateIntervalMs: 1000, // send updates to pg roughly every 1000ms
   slotName: "test_slot", // use slot-name 'test'-slot'
@@ -73,20 +73,6 @@ const wal2json = new PGStreamingReplication("postgres://<repl_user>:<password>@<
 for await (const change of wal2json.asAsyncIterator()) {
   console.log(change);
 }
-// other consumption options include piping...
-```
-
-**Options**
-
-The reader can be initialized as follows:
-```typescript
-// plain postgres://-connection-string
-const wal2json = new PGStreamingReplication('<connection-string>', opts);
-// pg-client options
-const wal2json = new PGStreamingReplication({ url: '...' }, opts);
-
-// a pg-client instance
-const wal2json = new PGStreamingReplication(client, opts);
 ```
 
 Opts has the following properties:
@@ -94,6 +80,6 @@ Opts has the following properties:
 | Opt  | Meaning |
 | ------------- | ------------- |
 | slotName  | The slotname for pg_logical, will be created if not exists  |
-| updateIntervalMs  | Interval for sending-back updates to pg, set 0 for reducing updates to the max  |
-| startLsn  | The start-LSN for the replication, note when the slot is already advanced this is ignored  |
-
+| updateIntervalMs  | (Optional) Interval for sending-back updates to pg, set 0 for reducing updates to the max  |
+| startLsn  | (Optional) The start-LSN for the replication, note when the slot is already advanced this is ignored  |
+| autoAckLsn  | (Optional) When set to true, set all received LSN directly as flushed upon next update-interval  |
