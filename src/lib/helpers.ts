@@ -7,6 +7,24 @@ import {
   IUpsertOperation,
 } from "./types";
 
+const POSTGRES_EPOCH_2000_01_01_BIGINT = 946684800000n; // milli-seconds <> 1970 -> 2000
+
+export const getNanoseconds = () => {
+  return process.hrtime.bigint();
+};
+
+export const formatCenturyMicroToDate = (systemClockMicroSeconds: Buffer): Date => {
+  const systemClockMillis = systemClockMicroSeconds.readBigInt64BE() / 1000n;
+
+  return new Date(+(systemClockMillis + POSTGRES_EPOCH_2000_01_01_BIGINT).toString());
+};
+
+export const nowAsMicroFromEpoch = (): bigint => {
+  const systemClockMillis = (BigInt(Date.now()) - POSTGRES_EPOCH_2000_01_01_BIGINT) * 1000n;
+
+  return systemClockMillis;
+};
+
 const convertRawPgLogicalData = <T>(lsn: string, data: IRawPGLogicalData) => {
   return data.change.map(change => {
     let operation: IDeleteOperation<T> | IUpsertOperation<T>;

@@ -10,8 +10,9 @@ export interface IPGPollingReplicationOpts {
 
 export interface IPGStreamingReplicationOpts {
   slotName: string;
-  startLsn: string;
+  startLsn?: string;
   updateIntervalMs?: number;
+  autoAckLsn?: boolean;
 }
 
 export interface IChange<T = Record<string, any>> {
