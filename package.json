@@ -26,7 +26,6 @@
     "obuf": "^1.1.2"
   },
   "devDependencies": {
-    "@types/obuf": "",
     "@types/pg-copy-streams": "^1.2.1",
     "@types/debug": "^4.1.7",
     "@types/pg": "^8.6.1",
