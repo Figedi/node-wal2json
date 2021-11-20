@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.5](https://github.com/Figedi/node-wal2json/compare/v0.0.4...v0.0.5) (2021-11-20)
+
+
+### Features
+
+* converts legacy polling to readable, removes rxjs ([7e4a204](https://github.com/Figedi/node-wal2json/commit/7e4a204f563241b6811e643f70272b9f3bd89b21))
+
 ### [0.0.4](https://github.com/Figedi/node-wal2json/compare/v0.0.3...v0.0.4) (2021-11-18)
 
 
