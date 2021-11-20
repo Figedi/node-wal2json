@@ -1,10 +1,17 @@
-import { Client } from "pg";
+import { Client, ClientConfig } from "pg";
 import { Transform, pipeline, finished } from "stream";
 import { both, CopyBothQueryStream } from "pg-copy-streams";
 import _debug from "debug";
 import assert from "assert";
 
-import { formatCenturyMicroToDate, getNanoseconds, normalizeStreamResults, nowAsMicroFromEpoch } from "./helpers";
+import {
+  destroyReplicationSlot,
+  formatCenturyMicroToDate,
+  getNanoseconds,
+  initReplicationSlot,
+  normalizeStreamResults,
+  nowAsMicroFromEpoch,
+} from "./helpers";
 import { IPGStreamingReplicationOpts } from "./types";
 import { LogSequenceNumber } from "./LogSequenceNumber";
 
@@ -37,14 +44,17 @@ export class PGStreamingReplication<T extends Record<string, any> = Record<strin
 
   private lastAppliedLSN = LogSequenceNumber.INVALID_LSN;
 
-  constructor(private client: Client, private opts: IPGStreamingReplicationOpts) {
+  private client!: Client;
+
+  constructor(clientOpts: string | ClientConfig, private opts: IPGStreamingReplicationOpts) {
     super({ objectMode: true });
+
+    this.client = new Client(clientOpts);
     assert(
-      (client as any).connectionParameters.replication === "database",
+      (this.client as any).connectionParameters.replication === "database",
       "Need to pass replication: 'database' to pg-client",
     );
-    // eslint-disable-next-line no-underscore-dangle
-    assert((client as any)._connected, "Need to pass a connected client, please call client.connect() first");
+
     this.buf = new BufferList();
     this.updateIntervalMs = this.opts.updateIntervalMs ?? 0;
     this.lastReceivedLSN = this.opts.startLsn
@@ -90,7 +100,9 @@ export class PGStreamingReplication<T extends Record<string, any> = Record<strin
     if (this.started) {
       throw new Error("Cannot call PGStreamingReplication#start() twice, please call stop() first");
     }
-    const startLsn = this.opts.startLsn ?? (await this.getStartLsn());
+    await this.client.connect();
+
+    const startLsn = await this.initSlotWithStartLSN();
     this.copyBothStream = both(`START_REPLICATION SLOT ${this.opts.slotName} LOGICAL ${startLsn}`, {
       alignOnCopyDataFrame: true,
     } as any);
@@ -109,7 +121,9 @@ export class PGStreamingReplication<T extends Record<string, any> = Record<strin
       } else {
         debug("Copy-stream ended");
       }
+
       this.client.end();
+      return this.cleanup();
     });
 
     this.started = true;
@@ -140,16 +154,26 @@ export class PGStreamingReplication<T extends Record<string, any> = Record<strin
     this.lastAppliedLSN = lsn;
   }
 
-  private async getStartLsn(): Promise<string> {
-    const client = new Client({
+  private getQueryClient(): Client {
+    return new Client({
       user: this.client.user,
       password: this.client.password,
       host: this.client.host,
       port: this.client.port,
       database: this.client.database,
     });
+  }
+
+  private async initSlotWithStartLSN(): Promise<string> {
+    const client = this.getQueryClient();
     try {
       await client.connect();
+      await initReplicationSlot(client, this.opts.slotName);
+
+      if (this.opts.startLsn) {
+        return this.opts.startLsn;
+      }
+
       const {
         rows: [row],
       } = await client.query("SELECT pg_current_wal_lsn()");
@@ -248,5 +272,17 @@ export class PGStreamingReplication<T extends Record<string, any> = Record<strin
     this.copyBothStream.write(buf);
 
     this.lastStatusUpdate = getNanoseconds();
+  }
+
+  private async cleanup() {
+    if (this.opts.destroySlotOnClose) {
+      const client = this.getQueryClient();
+      try {
+        await client.connect();
+        await destroyReplicationSlot(client, this.opts.slotName);
+      } finally {
+        await client.end();
+      }
+    }
   }
 }

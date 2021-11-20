@@ -1,15 +1,17 @@
 import { Duplex, DuplexOptions } from "stream";
 import { Submittable, Connection } from "pg";
 
-export interface IPGPollingReplicationOpts {
+export interface IPGBaseReplicationOpts {
   slotName: string;
-  pollTimeoutMs: number;
   temporary?: boolean;
   destroySlotOnClose?: boolean;
 }
 
-export interface IPGStreamingReplicationOpts {
-  slotName: string;
+export interface IPGPollingReplicationOpts extends IPGBaseReplicationOpts {
+  pollTimeoutMs: number;
+}
+
+export interface IPGStreamingReplicationOpts extends IPGBaseReplicationOpts {
   startLsn?: string;
   updateIntervalMs?: number;
   autoAckLsn?: boolean;

@@ -1,3 +1,4 @@
+import { Client } from "pg";
 import {
   IRawStreamingRow,
   IChange,
@@ -23,6 +24,17 @@ export const nowAsMicroFromEpoch = (): bigint => {
   const systemClockMillis = (BigInt(Date.now()) - POSTGRES_EPOCH_2000_01_01_BIGINT) * 1000n;
 
   return systemClockMillis;
+};
+
+export const initReplicationSlot = async (client: Client, slotName: string, temporary?: boolean) => {
+  const results = await client.query("SELECT * FROM pg_replication_slots WHERE slot_name = $1", [slotName]);
+  if (!results.rows.length) {
+    await client.query("SELECT pg_create_logical_replication_slot($1, 'wal2json', $2)", [slotName, temporary ?? false]);
+  }
+};
+
+export const destroyReplicationSlot = async (client: Client, slotName: string) => {
+  await client.query("SELECT pg_drop_replication_slot($1)", [slotName]);
 };
 
 const convertRawPgLogicalData = <T>(lsn: string, data: IRawPGLogicalData) => {

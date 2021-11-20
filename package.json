@@ -1,7 +1,7 @@
 {
   "name": "@figedi/node-wal2json",
   "version": "0.0.4",
-  "description": "Simple wal2json-interface via polling",
+  "description": "Logical decoding for postgres via wal2json",
   "main": "build/index.js",
   "repository": {
     "type": "git",
@@ -19,7 +19,6 @@
   "author": "Felix Kaminski",
   "license": "MIT",
   "dependencies": {
-    "rxjs": "^7.4.0",
     "pg": "^8.7.1",
     "pg-copy-streams": "^6.0.2",
     "debug": "^4.3.2",

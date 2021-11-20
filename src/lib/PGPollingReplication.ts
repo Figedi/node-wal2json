@@ -1,23 +1,21 @@
 import { Client, ClientConfig } from "pg";
-import { EMPTY, from, Observable } from "rxjs";
+import { Readable } from "stream";
 import _debug from "debug";
 
 const debug = _debug("wal2json");
 
 import { IChange, IPGPollingReplicationOpts } from "./types";
-import { normalizePollingResults } from "./helpers";
+import { destroyReplicationSlot, initReplicationSlot, normalizePollingResults } from "./helpers";
 
-export class PGPollingReplication<T extends Record<string, any> = Record<string, any>> {
+export class PGPollingReplication<T extends Record<string, any> = Record<string, any>> extends Readable {
   private running = false;
 
   private client!: Client;
 
-  constructor(clientOpts: string | ClientConfig | Client, private opts: IPGPollingReplicationOpts) {
-    if (clientOpts instanceof Client) {
-      this.client = clientOpts;
-    } else {
-      this.client = new Client(clientOpts);
-    }
+  constructor(clientOpts: string | ClientConfig, private opts: IPGPollingReplicationOpts) {
+    super({ objectMode: true });
+
+    this.client = new Client(clientOpts);
     if (this.opts.pollTimeoutMs < 100) {
       debug(
         `Very short timeout (${this.opts.pollTimeoutMs}ms) chosen, this can lead to ` +
@@ -26,58 +24,35 @@ export class PGPollingReplication<T extends Record<string, any> = Record<string,
     }
   }
 
-  public asAsyncIterator(): AsyncIterable<IChange<T>> {
-    if (this.running) {
-      void this.onError(
-        new Error("Service is already running, please call stop() first if you wish to consume via Async-iterators"),
-      );
-      return {
-        // eslint-disable-next-line @typescript-eslint/no-empty-function
-        async *[Symbol.asyncIterator]() {}, // empty async-iteratable, returns right away
-      };
-    }
-    this.running = true;
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const self = this;
-    return {
-      async *[Symbol.asyncIterator]() {
-        await self.start();
-
-        while (self.running) {
-          const changes = await self.readChanges();
-          yield* changes;
-
-          await new Promise(resolve => setTimeout(resolve, self.opts.pollTimeoutMs));
-        }
-      },
-    };
-  }
-
-  public asObservable(): Observable<IChange<T>> {
-    if (this.running) {
-      void this.onError(
-        new Error("Service is already running, please call stop() first if you wish to consume via Observables"),
-      );
-      return EMPTY;
-    }
-
-    return from(this.asAsyncIterator());
-  }
-
-  private async initReplicationSlot() {
-    const results = await this.client.query("SELECT * FROM pg_replication_slots WHERE slot_name = $1", [
-      this.opts.slotName,
-    ]);
-    if (!results.rows.length) {
-      await this.client.query("SELECT pg_create_logical_replication_slot($1, 'wal2json', $2)", [
-        this.opts.slotName,
-        this.opts.temporary ?? false,
-      ]);
+  public async start(): Promise<void> {
+    debug(this.opts, `Trying to initialize service for replication_slot ${this.opts.slotName}`);
+    try {
+      await this.client.connect();
+      await initReplicationSlot(this.client, this.opts.slotName, this.opts.temporary);
+      this.running = true;
+      debug(`Service successfully initialized with replication_slot ${this.opts.slotName}`);
+      this.initPolling().catch(e => this.onError(e));
+    } catch (e: any) {
+      return this.onError(e);
     }
   }
 
-  private async destroyReplicationSlot() {
-    await this.client.query("SELECT pg_drop_replication_slot($1)", [this.opts.slotName]);
+  public _read() {}
+
+  public async stop() {
+    if (!this.running) {
+      return this.onError(new Error("Service is not running yet, pleaase call start() firsts"));
+    }
+    return this.close();
+  }
+
+  private async initPolling() {
+    while (this.running) {
+      const changes = await this.readChanges();
+      changes.forEach(change => this.push(change));
+
+      await new Promise(resolve => setTimeout(resolve, this.opts.pollTimeoutMs));
+    }
   }
 
   private readChanges = async (): Promise<IChange<T>[]> => {
@@ -112,27 +87,9 @@ export class PGPollingReplication<T extends Record<string, any> = Record<string,
     debug("Gracefully closing service");
     this.running = false;
     if (this.opts.destroySlotOnClose) {
-      await this.destroyReplicationSlot();
+      await destroyReplicationSlot(this.client, this.opts.slotName);
     }
     await this.client.end();
     debug("Service successfully closed");
-  }
-
-  private async start(): Promise<void> {
-    debug(this.opts, `Trying to initialize service for replication_slot ${this.opts.slotName}`);
-    try {
-      await this.client.connect();
-      await this.initReplicationSlot();
-      debug(`Service successfully initialized with replication_slot ${this.opts.slotName}`);
-    } catch (e: any) {
-      return this.onError(e);
-    }
-  }
-
-  public async stop() {
-    if (!this.running) {
-      return this.onError(new Error("Service is not running yet, pleaase call start() firsts"));
-    }
-    return this.close();
   }
 }

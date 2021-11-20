@@ -8,3 +8,4 @@ temp/
 **/test-reports/**
 src/test.ts
 dist
+resources
